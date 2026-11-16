@@ -44,11 +44,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/raysnows/dsh-vendor-quick-switch.git"
+    "url": "git+https://github.com/1250589385/dsh-vendor-quick-switch.git"
   },
-  "homepage": "https://github.com/raysnows/dsh-vendor-quick-switch#readme",
+  "homepage": "https://github.com/1250589385/dsh-vendor-quick-switch#readme",
   "bugs": {
-    "url": "https://github.com/raysnows/dsh-vendor-quick-switch/issues"
+    "url": "https://github.com/1250589385/dsh-vendor-quick-switch/issues"
   },
   "engines": {
     "node": "^22.19.0 || >=24.0.0",
