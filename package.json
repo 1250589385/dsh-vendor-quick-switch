@@ -1,0 +1,78 @@
+{
+  "name": "dsh-vendor-quick-switch",
+  "version": "1.0.0",
+  "description": "Vendor-first quick model switching for DeepSeek Harness: a side index beside the shipped model menu, plus an in-menu drill-down mode. · DSH 厂商快速切换：模型菜单旁常驻厂商索引，点厂商直接跳转，不改造原插件。",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "deepseek",
+    "plugin",
+    "harness",
+    "cordis",
+    "web-ui",
+    "ui",
+    "model",
+    "model-switcher",
+    "model-selector",
+    "provider",
+    "composer",
+    "menu"
+  ],
+  "license": "MIT",
+  "author": {
+    "name": "raysnows"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/raysnows/dsh-vendor-quick-switch.git"
+  },
+  "homepage": "https://github.com/raysnows/dsh-vendor-quick-switch#readme",
+  "bugs": {
+    "url": "https://github.com/raysnows/dsh-vendor-quick-switch/issues"
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0",
+    "dsh": ">=0.2.2-rc.3 <0.3.0-0"
+  },
+  "scripts": {
+    "test": "node test/client.test.cjs && node test/render.test.cjs",
+    "check": "node --check index.js && node --check client.js && node test/client.test.cjs && node test/render.test.cjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-model-selection",
+        "@deepseek-ai/dsh-client-locale"
+      ]
+    },
+    "compatibility": {
+      "dsh": ">=0.2.2-rc.3"
+    }
+  }
+}

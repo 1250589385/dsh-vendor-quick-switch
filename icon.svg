@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 36 36" role="img" aria-label="Vendor quick switch">
+  <g fill="none" stroke="#4f7eae" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="5" y="7" width="10" height="9" rx="2"/>
+    <rect x="21" y="20" width="10" height="9" rx="2"/>
+    <path d="M20 11.5h5.5A4.5 4.5 0 0 1 30 16v4"/>
+    <path d="m27 17 3 3 3-3"/>
+    <path d="M16 24.5h-5.5A4.5 4.5 0 0 1 6 20v-4"/>
+    <path d="m9 19-3-3-3 3"/>
+  </g>
+</svg>

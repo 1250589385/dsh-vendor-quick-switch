@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Vendor quick switch",
+    "description": "A vendor index beside the existing model menu. Side panel (default): the index stays next to the menu while it is open, including after drilling into the model list, and clicking a vendor jumps to that vendor inside the existing list, so the shipped list is the second level and no submenu is added. In menu: no side list, the lists expand inside the shipped menu. Surfaces reuse the shipped menu tokens, vision-plugin routes are filtered out, and the original selector is never modified or disabled."
+  }
+}
