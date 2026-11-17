@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.1
+
+- Keep the shipped menu, and with it the vendor index and the model list, inside
+  the safe band. Renderers without CSS anchor positioning place that menu at the
+  top-left corner and let it grow with its content, so a long model list ran past
+  the bottom of the window; the menu now receives a bounded height and sits above
+  the composer tool row, keeping its own internal scrolling. A menu that already
+  fits is left untouched, and the original inline styles are restored on close.
+
 ## 1.0.0
 
 First public release.

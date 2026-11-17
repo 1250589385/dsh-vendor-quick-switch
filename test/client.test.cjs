@@ -6,7 +6,7 @@ const vm = require('node:vm');
 const root = path.resolve(__dirname, '..');
 const plain = value => JSON.parse(JSON.stringify(value));
 const MARKER = "    return {\n      inject: ['slots', 'locale'],";
-const EXPOSE = "    return {\n      __test: { orderVendors, isVisionTwin, vendorFor, selectionFor, settings, panel },\n      inject: ['slots', 'locale'],";
+const EXPOSE = "    return {\n      __test: { orderVendors, isVisionTwin, vendorFor, selectionFor, settings, panel, boundSurface },\n      inject: ['slots', 'locale'],";
 
 const React = {
   createElement: () => null,
@@ -60,7 +60,7 @@ function load(withStyles = true) {
   assert.ok(source.includes('var(--dsw-menu-backdrop-filter'), 'menu backdrop token');
 
   const plugin = definition.factory(() => React);
-  const { orderVendors, isVisionTwin, vendorFor, selectionFor, settings, panel } = plugin.__test;
+  const { orderVendors, isVisionTwin, vendorFor, selectionFor, settings, panel, boundSurface } = plugin.__test;
 
   assert.equal(settings.getSnapshot(), 'panel');
   settings.set('menu');
@@ -153,6 +153,29 @@ function load(withStyles = true) {
 
   assert.ok(!source.includes("'conversation.input.model'"), 'must not replace the model seat');
   assert.ok(!source.includes("'conversation.input.left'"), 'no standalone toolbar button');
+
+  // The shipped menu surface is bounded only when it renders out of the safe
+  // band; a menu that already fits must be left exactly as the host placed it.
+  const makeSurface = (top, bottom) => {
+    const style = { top: '', bottom: '', maxHeight: '' };
+    return {
+      style,
+      getBoundingClientRect: () => ({ top, bottom, left: 0, right: 200 }),
+    };
+  };
+  const fitting = makeSurface(100, 400);
+  assert.equal(boundSurface(fitting, 800), false, 'a fitting menu is untouched');
+  assert.deepEqual(plain(fitting.style), { top: '', bottom: '', maxHeight: '' });
+
+  const spilling = makeSurface(12, 900);
+  assert.equal(boundSurface(spilling, 800), true, 'a spilling menu is bounded');
+  assert.equal(spilling.style.maxHeight, '660px', 'bounded to the safe band');
+  assert.equal(spilling.style.bottom, '132px', 'sits above the composer tool row');
+  assert.equal(spilling.style.top, 'auto');
+
+  const aboveCeiling = makeSurface(-40, 300);
+  assert.equal(boundSurface(aboveCeiling, 800), true, 'a menu above the ceiling is bounded too');
+  assert.equal(boundSurface(null, 800), false, 'no surface, nothing to do');
   const patch = fs.readFileSync(path.join(root, 'cordis.patch.yml'), 'utf8');
   assert.ok(patch.includes('- insert:'));
   assert.ok(!patch.includes('disabled:'));

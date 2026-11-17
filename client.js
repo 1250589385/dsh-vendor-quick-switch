@@ -229,6 +229,24 @@ window.__ModuleLoader__.load({
 
     const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
 
+    /**
+     * Put the shipped menu surface inside the safe band when it renders out of
+     * it (renderers without CSS anchor positioning fall back to the top-left
+     * corner and grow with their content).
+     * @returns true when the surface was adjusted.
+     */
+    function boundSurface(surface, viewportHeight) {
+      if (surface === null || surface === undefined) return false;
+      const floor = viewportHeight - COLUMN_FLOOR;
+      const ceiling = COLUMN_INSET;
+      const box = surface.getBoundingClientRect();
+      if (box.bottom <= floor && box.top >= ceiling) return false;
+      surface.style.maxHeight = `${Math.max(160, floor - ceiling)}px`;
+      surface.style.bottom = `${COLUMN_FLOOR}px`;
+      surface.style.top = 'auto';
+      return true;
+    }
+
     /** Nearest fixed/absolute ancestor: the shipped menu surface. */
     function surfaceOf(node) {
       let current = node;
@@ -280,6 +298,40 @@ window.__ModuleLoader__.load({
       const [activeId, setActiveId] = React.useState(null);
       const columnRef = React.useRef(null);
       const { state: catalog } = useDirectory(getModels, state.sessionId);
+
+      /**
+       * Keep the shipped menu itself inside the safe band.
+       *
+       * The shipped surface is placed with CSS anchor positioning. Where the
+       * renderer does not support it, the menu falls back to the top-left
+       * corner and grows with its content, so a long model list runs past the
+       * bottom of the window — and a vendor index that follows that rectangle
+       * runs past it too. Only the out-of-band case is touched: the menu gets a
+       * bounded height, sits above the composer's tool row, and keeps its own
+       * internal scrolling. Original inline values are restored on close.
+       */
+      React.useEffect(() => {
+        if (!state.open || state.surface === null) return undefined;
+        const surface = state.surface;
+        const saved = {
+          top: surface.style.top,
+          bottom: surface.style.bottom,
+          maxHeight: surface.style.maxHeight,
+        };
+        const apply = () => {
+          boundSurface(surface, window.innerHeight);
+        };
+        apply();
+        const frame = window.requestAnimationFrame(apply);
+        window.addEventListener('resize', apply);
+        return () => {
+          window.cancelAnimationFrame(frame);
+          window.removeEventListener('resize', apply);
+          surface.style.top = saved.top;
+          surface.style.bottom = saved.bottom;
+          surface.style.maxHeight = saved.maxHeight;
+        };
+      }, [state.open, state.surface]);
 
       /* Follow the shipped menu every frame; a no-op frame writes no state. */
       React.useEffect(() => {
