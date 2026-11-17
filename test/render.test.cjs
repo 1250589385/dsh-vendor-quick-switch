@@ -146,8 +146,28 @@ const index = VendorIndex({ getModels: () => models, t: key => key });
 assert.equal(index.props.className, 'vqs-col');
 assert.equal(index.props.style.width, 176);
 assert.equal(index.props.style.left, 560 + 6, 'attaches beside the shipped menu');
-assert.equal(index.props.style.top, 180, 'bottom-aligns with the menu');
+assert.equal(index.props.style.top, 300, 'starts level with the shipped menu');
 assert.ok(index.props.style.top + index.props.style.maxHeight <= 800 - 132, 'clears the tool row');
+
+// A menu that renders far past the window must not drag the column with it:
+// the column is clamped to the band and the menu itself is left alone.
+{
+  const spilling = {
+    isConnected: true,
+    contains: () => true,
+    getBoundingClientRect: () => ({ top: 12, bottom: 1400, left: 400, right: 560 }),
+    querySelector: () => null,
+    style: { top: '', bottom: '', maxHeight: '' },
+  };
+  panel.show('session-1', spilling);
+  harness.index = 0;
+  harness.queue = [{ top: 12, bottom: 1400, left: 400, right: 560 }, null];
+  const tall = VendorIndex({ getModels: () => models, t: key => key });
+  assert.ok(tall.props.style.top >= 8, 'column stays below the ceiling');
+  assert.ok(tall.props.style.top + tall.props.style.maxHeight <= 800 - 132, 'column stays in the band');
+  assert.deepEqual(spilling.style, { top: '', bottom: '', maxHeight: '' }, 'the shipped menu is untouched');
+  panel.show('session-1', surface);
+}
 
 const indexVendors = collect(index, node => node.props['data-vendor-id'] !== undefined);
 assert.deepEqual(indexVendors.map(node => node.props['data-vendor-id']), ['deepseek-official', 'tb', 'codearts']);

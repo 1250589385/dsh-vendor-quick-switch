@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.2
+
+- Revert the 1.0.1 attempt to bound the shipped menu. That change shortened the
+  host's default model list, which is the host's to decide. The plugin now only
+  bounds its own vendor column to the viewport and leaves the shipped menu's
+  height, offset, and list length untouched even when it renders past the window.
+
 ## 1.0.1
 
 - Keep the shipped menu, and with it the vendor index and the model list, inside
