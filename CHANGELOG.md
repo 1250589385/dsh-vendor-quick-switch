@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.3
+
+- Clicking a vendor now scrolls the shipped list's own scroll box just far
+  enough to show that vendor's group heading, so the vendor name and the models
+  under it are both on screen. It never forces the heading to the very top: a
+  vendor near the end of the list stops at the list's maximum scroll, and a
+  heading already in view is left where it is.
+- The heading lookup accepts every name a provider may appear under, including
+  the host's localized account label.
+
 ## 1.0.2
 
 - Revert the 1.0.1 attempt to bound the shipped menu. That change shortened the

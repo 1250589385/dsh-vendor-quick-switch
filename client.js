@@ -248,20 +248,62 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Bring one vendor's group heading into view inside the shipped list.
-     * @returns true when the heading was found and scrolled to.
+     * The scrollable box the shipped list scrolls inside, if any.
+     * @returns the nearest vertically scrollable ancestor, or null.
      */
-    function revealVendor(surface, name) {
-      const list = listOf(surface);
-      if (list === null) return false;
-      const nodes = list.querySelectorAll('div,span');
-      for (const node of nodes) {
+    function scrollerOf(node) {
+      let current = node.parentElement;
+      while (current !== null && current !== undefined && current !== document.body) {
+        const style = window.getComputedStyle(current);
+        if (/(auto|scroll)/.test(style.overflowY) && current.scrollHeight > current.clientHeight + 1) {
+          return current;
+        }
+        current = current.parentElement;
+      }
+      return null;
+    }
+
+    /**
+     * Bring one vendor's group heading to the top of the shipped list, so the
+     * vendor name and the models under it are both on screen.
+     * @param names - every display name the vendor may appear under.
+     * @returns true when a heading was found and scrolled to.
+     */
+    function revealVendor(surface, names) {
+      const list = listOf(surface) ?? surface;
+      if (list === null || list === undefined) return false;
+      if (typeof list.querySelectorAll !== 'function') return false;
+      const wanted = new Set((Array.isArray(names) ? names : [names])
+        .filter(name => typeof name === 'string' && name !== '')
+        .map(name => name.trim()));
+      if (wanted.size === 0) return false;
+
+      let heading = null;
+      for (const node of list.querySelectorAll('div,span,button,li,header')) {
         if (node.children.length !== 0) continue;
-        if ((node.textContent ?? '').trim() !== name) continue;
-        node.scrollIntoView({ block: 'nearest' });
+        const text = (node.textContent ?? '').trim();
+        if (text === '') continue;
+        if (!wanted.has(text)) continue;
+        heading = node;
+        break;
+      }
+      if (heading === null) return false;
+
+      /* Scroll only as far as needed to bring the heading into the box. A vendor
+       * near the end of the list stops at the maximum scroll instead of being
+       * forced to the top, which is what a short tail can actually reach. */
+      const scroller = scrollerOf(heading);
+      const box = heading.getBoundingClientRect();
+      if (scroller !== null && scroller !== undefined) {
+        const frame = scroller.getBoundingClientRect();
+        if (box.top >= frame.top && box.bottom <= frame.bottom) return true;
+        const maxScroll = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+        const delta = box.top - frame.top;
+        scroller.scrollTop = Math.min(maxScroll, Math.max(0, scroller.scrollTop + delta));
         return true;
       }
-      return false;
+      heading.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      return true;
     }
 
     /* ---------------------------------------------------------------- flyout */
@@ -372,20 +414,27 @@ window.__ModuleLoader__.load({
       const jump = group => {
         setActiveId(group.id);
         const surface = state.surface;
-        const name = group.id === 'deepseek-account' ? t('vendor.account') : group.name;
-        if (revealVendor(surface, name)) return;
-        // The menu is on its root pane: open the shipped model list, then reveal.
+        /* The host localizes the account group, so try every name it can wear. */
+        const names = [group.name, 'DeepSeek 账号', 'DeepSeek Account', t('vendor.account')]
+          .filter(name => typeof name === 'string' && name !== '');
+        if (revealVendor(surface, names)) return;
+
+        // Still on the shipped root pane: open its model list, then reveal.
         const cell = surface?.querySelector('button[role="menuitem"]');
         if (cell === null || cell === undefined) return;
         cell.click();
+
         let tries = 0;
         const tick = () => {
-          if (revealVendor(surface, name)) return;
+          if (revealVendor(surface, names)) return;
           tries += 1;
-          if (tries >= 12) return;
+          if (tries >= 20) return;
           window.requestAnimationFrame(tick);
         };
         window.requestAnimationFrame(tick);
+        // The model pane can mount after an animation frame; one late pass
+        // covers a list that was still empty on the first frames.
+        window.setTimeout(() => { revealVendor(surface, names); }, 120);
       };
 
       return h('div', {

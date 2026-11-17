@@ -28,7 +28,10 @@ function load() {
       requestAnimationFrame: fn => { fn(); return 1; },
       cancelAnimationFrame() {},
       setTimeout: fn => { fn(); return 1; },
-      getComputedStyle: () => ({ position: 'static' }),
+      getComputedStyle: node => ({
+        position: 'static',
+        ...(node && node.__scrollY ? { overflowY: 'auto' } : {}),
+      }),
       localStorage: {
         getItem: key => (store.has(key) ? store.get(key) : null),
         setItem: (key, value) => store.set(key, value),
@@ -193,9 +196,24 @@ assert.equal(prevented, 1, 'mousedown refuses focus so the menu does not blur-cl
 /* ------------------------------------------------- vendor jump into the list */
 
 {
-  const scrolled = [];
-  const heading = { children: [], textContent: 'CodeArts', scrollIntoView: () => { scrolled.push('CodeArts'); } };
-  const list = { querySelectorAll: () => [heading] };
+  /* A heading inside a scrollable list: the jump must scroll that box so the
+   * vendor name lands at the top with its models underneath. */
+  const scroller = {
+    __scrollY: true,
+    scrollTop: 120,
+    scrollHeight: 1200,
+    clientHeight: 300,
+    getBoundingClientRect: () => ({ top: 100, bottom: 400, left: 0, right: 200 }),
+    parentElement: null,
+  };
+  const heading = {
+    children: [],
+    textContent: 'CodeArts',
+    getBoundingClientRect: () => ({ top: 500, bottom: 520, left: 0, right: 200 }),
+    parentElement: scroller,
+    scrollIntoView: () => { throw new Error('the inner scroller should be used, not the page'); },
+  };
+  const list = { querySelectorAll: () => [heading], parentElement: null };
   const withList = {
     isConnected: true,
     contains: () => true,
@@ -208,7 +226,50 @@ assert.equal(prevented, 1, 'mousedown refuses focus so the menu does not blur-cl
   const open = VendorIndex({ getModels: () => models, t: key => key });
   const codearts = collect(open, node => node.props['data-vendor-id'] === 'codearts')[0];
   codearts.props.onClick();
-  assert.deepEqual(scrolled, ['CodeArts'], 'clicking a vendor scrolls the shipped list to its group');
+  // Heading sat 400px below the box top → scrolled by exactly that much.
+  assert.equal(scroller.scrollTop, 120 + 400, 'the list scrolls only as far as needed');
+
+  // A vendor near the end stops at the maximum scroll instead of being forced up.
+  const tail = {
+    children: [],
+    textContent: 'TB积分助手',
+    getBoundingClientRect: () => ({ top: 2000, bottom: 2020, left: 0, right: 200 }),
+    parentElement: scroller,
+    scrollIntoView: () => { throw new Error('no page scroll'); },
+  };
+  scroller.scrollTop = 100;
+  const tailList = { querySelectorAll: () => [tail], parentElement: null };
+  panel.show('session-1', {
+    isConnected: true,
+    contains: () => true,
+    getBoundingClientRect: () => ({ top: 300, bottom: 520, left: 400, right: 560 }),
+    querySelector: selector => (selector === '[role="menu"]' ? tailList : null),
+  });
+  harness.index = 0;
+  harness.queue = [{ top: 300, bottom: 520, left: 400, right: 560 }, null];
+  const tailIndex = VendorIndex({ getModels: () => models, t: key => key });
+  collect(tailIndex, node => node.props['data-vendor-id'] === 'tb')[0].props.onClick();
+  assert.equal(scroller.scrollTop, 900, 'clamped to the maximum scroll, allowed to sit mid-list');
+
+  // An already visible heading is not scrolled at all.
+  scroller.scrollTop = 40;
+  const visible = {
+    children: [],
+    textContent: 'CodeArts',
+    getBoundingClientRect: () => ({ top: 150, bottom: 170, left: 0, right: 200 }),
+    parentElement: scroller,
+    scrollIntoView: () => { throw new Error('no page scroll'); },
+  };
+  panel.show('session-1', {
+    isConnected: true,
+    contains: () => true,
+    getBoundingClientRect: () => ({ top: 300, bottom: 520, left: 400, right: 560 }),
+    querySelector: selector => (selector === '[role="menu"]' ? { querySelectorAll: () => [visible], parentElement: null } : null),
+  });
+  harness.index = 0;
+  harness.queue = [{ top: 300, bottom: 520, left: 400, right: 560 }, null];
+  collect(VendorIndex({ getModels: () => models, t: key => key }), node => node.props['data-vendor-id'] === 'codearts')[0].props.onClick();
+  assert.equal(scroller.scrollTop, 40, 'a visible vendor does not move the list');
 }
 
 /* ------------------------------- root pane: open the list, then reveal the group */
