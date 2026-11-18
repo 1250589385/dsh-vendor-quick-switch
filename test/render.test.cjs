@@ -11,7 +11,7 @@ const vm = require('node:vm');
 
 const root = path.resolve(__dirname, '..');
 const MARKER = "    return {\n      inject: ['slots', 'locale'],";
-const EXPOSE = "    return {\n      __test: { VendorSeat, VendorIndex, SettingsCard, panel, settings },\n      inject: ['slots', 'locale'],";
+const EXPOSE = "    return {\n      __test: { VendorSeat, VendorIndex, SettingsCard, panel, settings, credits },\n      inject: ['slots', 'locale'],";
 
 function load() {
   const raw = fs.readFileSync(path.join(root, 'client.js'), 'utf8');
@@ -84,6 +84,10 @@ function collect(node, predicate, out = []) {
     return out;
   }
   if (typeof node !== 'object') return out;
+  if (typeof node.type === 'function') {
+    // Resolve function components (the credit badge) so assertions see real rows.
+    return collect(node.type({ ...node.props, children: node.children }), predicate, out);
+  }
   if (predicate(node)) out.push(node);
   for (const child of node.children) collect(child, predicate, out);
   return out;
@@ -113,7 +117,11 @@ const models = { directoryFor: id => (assert.equal(id, 'session-1'), directory) 
 const { definition } = load();
 const { React, harness } = makeReact();
 const plugin = definition.factory(() => React);
-const { VendorSeat, VendorIndex, SettingsCard, panel, settings } = plugin.__test;
+const { VendorSeat, VendorIndex, SettingsCard, panel, settings, credits } = plugin.__test;
+const plain = value => JSON.parse(JSON.stringify(value));
+
+/* With no fetch the store stays empty and every badge renders nothing. */
+assert.deepEqual(plain(credits.getSnapshot().rows), {}, 'no fetch, no rows, no throw');
 
 const baseProps = {
   sessionId: 'session-1',
@@ -183,6 +191,21 @@ assert.equal(collect(index, node => node.props['aria-current'] === 'true').lengt
 
 // No second column: the shipped model list is the second level.
 assert.equal(collect(index, node => node.props.role === 'menuitemradio').length, 0);
+assert.equal(collect(index, node => node.props.className === 'vqs-credit').length, 0, 'unknown vendors get no badge');
+
+/* A settled row shows its badge with the source and the exact value in the
+ * tooltip; the badge sits between the vendor name and the selection check. */
+credits.__setForTest('tb', { state: 'ok', badge: '5.4k', detail: '5,428.90', source: 'tb', at: Date.now() });
+harness.index = 0;
+harness.queue = [{ top: 300, bottom: 520, left: 400, right: 560 }, null];
+const credited = VendorIndex({ getModels: () => models, t: key => key });
+const badge = collect(credited, node => node.props.className === 'vqs-credit');
+assert.equal(badge.length, 1, 'only the vendor whose source answered shows a badge');
+assert.equal(textOf(badge[0]), '5.4k');
+assert.equal(badge[0].props.title, 'credits.title');
+const tbRow = collect(credited, node => node.props['data-vendor-id'] === 'tb')[0];
+assert.deepEqual(tbRow.children.map(child => child && child.props && child.props.className), ['vqs-name', undefined, 'vqs-check']);
+credits.__setForTest('tb', { state: 'miss', badge: null, detail: null, source: 'tb', at: Date.now() });
 
 // The press must never reach the shipped menu's outside-press dismissal, and
 // must not steal focus: a focused row here fires the menu's own blur handler,
@@ -227,10 +250,13 @@ assert.equal(prevented, 1, 'mousedown refuses focus so the menu does not blur-cl
       contains: () => false,
       getBoundingClientRect: () => ({ top: rowTop, bottom: rowTop + 20, left: 0, right: 200 }),
       parentElement: group,
+      // Only the shipped list container is a `[role="menu"]`; the model row is
+      // a `menuitemradio` button and must be found exactly that way.
+      closest: selector => (selector === '[role="menu"]' ? scroller : null),
     };
     const marker = {
       getAttribute: name => (name === 'data-provider-id' ? provider : null),
-      closest: () => row,
+      closest: selector => (selector === 'button[role="menuitemradio"]' ? row : null),
     };
     group.parentElement = scroller;
     scroller.querySelectorAll = selector => (selector === '[data-provider-id]' ? [marker] : []);
@@ -243,6 +269,9 @@ assert.equal(prevented, 1, 'mousedown refuses focus so the menu does not blur-cl
     contains: () => true,
     getBoundingClientRect: () => ({ top: 300, bottom: 520, left: 400, right: 560 }),
     querySelector: selector => (selector === '[role="menu"]' ? scroller : null),
+    // A real surface contains the drilled list, so provider markers are found
+    // from either scope.
+    querySelectorAll: (...args) => scroller.querySelectorAll(...args),
   };
   panel.show('session-1', withList);
   harness.index = 0;
@@ -303,6 +332,29 @@ assert.equal(prevented, 1, 'mousedown refuses focus so the menu does not blur-cl
   assert.deepEqual(clicks, ['model'], 'the shipped model pane is opened before revealing');
 }
 
+/* Regression: the vendor that is already selected must expand on click too.
+ * The shipped root pane renders that vendor's id on its Model cell, so a
+ * marker-only lookup answered "already revealed" with a zero-distance success
+ * and the click did nothing until another vendor had been expanded first. */
+{
+  const clicks = [];
+  const currentMarker = { getAttribute: () => 'deepseek-official', closest: () => null };
+  const cell = { click: () => { clicks.push('model'); } };
+  const surface = {
+    isConnected: true,
+    contains: () => true,
+    getBoundingClientRect: () => ({ top: 300, bottom: 520, left: 400, right: 560 }),
+    querySelectorAll: selector => (selector === '[data-provider-id]' ? [currentMarker] : []),
+    querySelector: selector => (selector === 'button[role="menuitem"]' ? cell : null),
+  };
+  panel.show('session-1', surface);
+  harness.index = 0;
+  harness.queue = [{ top: 300, bottom: 520, left: 400, right: 560 }, null];
+  const index = VendorIndex({ getModels: () => models, t: key => key });
+  collect(index, node => node.props['data-vendor-id'] === 'deepseek-official')[0].props.onClick();
+  assert.deepEqual(clicks, ['model'], 'the selected vendor still opens the model list');
+}
+
 /* ----------------------- effort/search panes: return, drill, then reveal */
 
 for (const startPane of ['effort', 'search']) {
@@ -332,10 +384,19 @@ for (const startPane of ['effort', 'search']) {
     contains: () => false,
     parentElement: group,
     getBoundingClientRect: () => ({ top: 530, bottom: 550, left: 0, right: 200 }),
+    closest: selector => (selector === '[role="menu"]' ? viewport : null),
   };
   const marker = {
     getAttribute: () => 'tb',
-    closest: () => row,
+    closest: selector => (selector === 'button[role="menuitemradio"]' ? row : null),
+  };
+  /* The root pane paints the current model's provider id on its "model" cell.
+   * That cell is a plain menuitem, never a model option row: it must not be
+   * mistaken for a revealed group, or the current vendor answers the click
+   * with a zero-distance success and never expands. */
+  const cellMarker = {
+    getAttribute: () => 'tb',
+    closest: () => null,
   };
   viewport.querySelectorAll = selector => (selector === '[data-provider-id]' ? [marker] : []);
   const filtered = { querySelectorAll: () => [] };
@@ -344,7 +405,9 @@ for (const startPane of ['effort', 'search']) {
     isConnected: true,
     contains: () => true,
     getBoundingClientRect: () => ({ top: 300, bottom: 520, left: 400, right: 560 }),
-    querySelectorAll: () => [],
+    querySelectorAll: selector => (selector !== '[data-provider-id]'
+      ? []
+      : pane === 'model' ? [marker] : [cellMarker]),
     querySelector: selector => {
       if (selector === 'button[role="menuitem"]') return pane === 'root' ? cell : null;
       if (selector === '[role="menu"]') {

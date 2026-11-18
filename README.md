@@ -22,7 +22,19 @@ A second style renders the same two levels **inside** the shipped menu instead o
 - The panel reuses the shipped menu material tokens (`--dsw-menu-surface-fill`, `--dsw-menu-backdrop-filter`, `--dsw-elevation-prominent`), so it reads as the same surface rather than a hand-picked color.
 - Presses and focus inside the panel are contained, so the shipped menu does not treat a vendor click as an outside press or as focus leaving it.
 - Routes derived by vision plugins (`*-vision`, "+ 自动识图" / "+ Auto Vision") are filtered out of the vendor list. A current selection on such a route still maps back to its listed vendor.
-- No provider configuration, credential, or session data is read or written.
+- No provider credential or session data is read or written. Optional quota reads are bounded, cached, and sanitized before they reach the browser.
+
+## Optional remaining-credit badges
+
+A vendor row shows its remaining credit only when a source can actually answer; otherwise the badge is absent rather than `0` or a placeholder. Hover the badge for the exact value and its source. Values with four digits or more are abbreviated (`1.2k`, `1.2M`, `1B`).
+
+Sources are probed independently and none is required:
+
+- Channel Pack `credits.balances`, when that channel is installed;
+- TB Panel points and Whale Widget balance, when those routes exist;
+- **Magpie `/v1/magpie/quotas` as a generic fallback for any matching provider route**, including custom upstreams. The Host half discovers the explicit `MAGPIE_URL` / `MAGPIE_BASE_URL`, the port in Magpie's `settings.json` (Windows, macOS, and Linux config locations), then the default port `3425`. Embedded Magpie and already-installed Magpie quota routes are also supported.
+
+Magpie matching uses real route/provider metadata, not model-name guesses. Prepaid balances, absolute credit/token windows, and percentage windows are supported. Multiple accounts are combined only when their units are comparable; mixed units are never added together. All sources are optional, so installing this plugin on a machine without any of them changes nothing except hiding the badges.
 
 ## Install
 

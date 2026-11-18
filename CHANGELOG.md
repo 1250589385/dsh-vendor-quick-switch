@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.0.4
+
+- Fixed: clicking the vendor that was already selected did nothing until some
+  other vendor had been clicked first. The shipped root pane renders the current
+  model's provider id on its "model" cell, so the vendor lookup treated that
+  vendor's group as already on screen and returned without ever opening the
+  model list. Only real model option rows count as a revealed group now, so the
+  selected vendor expands on the first click, like every other vendor.
+- Remaining-credit badges on vendor rows. Each source is probed on its own and
+  only the ones that actually answer on this machine are used: the channel
+  pack's credits RPC, the points panels, and any Magpie-compatible quota
+  endpoint (own Host bridge first, then the well-known plugin routes, then
+  Magpie's `/v1/magpie/quotas`). Nothing is hard-coded for one installation, and
+  an absent gateway, plugin, or route simply means no badge.
+- A badge is drawn only where a value is actually known. Values past three
+  digits are abbreviated (`1.2k`, `3.1k`), the tooltip carries the exact value
+  and its source, and amounts in different units are never added together.
+- Magpie offers are matched to vendors by route and provider metadata only, so a
+  model family name never decides a vendor; ambiguous matches stay hidden.
+- Optional quota reads are Host-bridged, loopback-only, same-origin only,
+  bounded, cached, and stripped of account identity before they reach the page.
+
 ## 1.0.3
 
 - Clicking a vendor now scrolls the shipped list's own scroll box just far

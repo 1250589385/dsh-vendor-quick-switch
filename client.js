@@ -20,6 +20,11 @@ window.__ModuleLoader__.load({
       'settings.description': '侧挂面板：打开模型菜单时，厂商索引常驻在菜单旁边，点厂商直接跳到原模型列表里该厂商的位置，不另做二级菜单。菜单内展开：不弹侧栏，只在原菜单里逐级展开厂商与模型。偏好保存在本机浏览器。',
       'settings.panel': '侧挂面板',
       'settings.menu': '菜单内展开',
+      'credits.channel': '渠道包余额',
+      'credits.tb': '淘宝积分',
+      'credits.whale': 'DeepSeek 余额',
+      'credits.magpie': 'MAGPIE 额度',
+      'credits.title': '{label}：{detail}',
     };
     const en = {
       vendor: 'Vendor',
@@ -34,6 +39,11 @@ window.__ModuleLoader__.load({
       'settings.description': 'Side panel: while the model menu is open, a vendor index stays beside it; clicking a vendor jumps to that vendor inside the existing model list, with no separate second-level menu. In menu: no side list, the vendor and model lists expand inside the shipped menu. The preference is kept in this browser.',
       'settings.panel': 'Side panel',
       'settings.menu': 'In menu',
+      'credits.channel': 'Channel pack balance',
+      'credits.tb': 'TB points',
+      'credits.whale': 'DeepSeek balance',
+      'credits.magpie': 'Magpie quota',
+      'credits.title': '{label}: {detail}',
     };
 
     const CSS = `
@@ -47,6 +57,8 @@ window.__ModuleLoader__.load({
 .vqs-check{display:grid;place-items:center;flex:0 0 14px;color:var(--dsw-alias-label-primary)}
 .vqs-check svg{width:14px;height:14px}
 .vqs-name{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vqs-credit{flex:0 0 auto;max-width:46%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px;font-variant-numeric:tabular-nums;text-align:right}
+.vqs-option:disabled .vqs-credit{color:inherit;opacity:.72}
 .vqs-status{padding:6px 8px;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}
 .vqs-spinner{box-sizing:border-box;width:12px;height:12px;border:1.5px solid currentColor;border-right-color:transparent;border-radius:50%;animation:vqs-spin .7s linear infinite}
 @keyframes vqs-spin{to{transform:rotate(360deg)}}
@@ -146,6 +158,497 @@ window.__ModuleLoader__.load({
         },
       };
     })();
+
+    /* ---------------------------------------------------------------- credits */
+
+    /**
+     * Remaining credit per vendor, read from whichever plugin already owns that
+     * number: the channel pack's `credits.balances` RPC, the TB panel's points
+     * route, the whale widget's balance route. Nothing is recomputed here, and a
+     * vendor whose source cannot answer renders no badge at all — no zero, no
+     * placeholder, no guessing at a provider id.
+     */
+    const CREDIT_TTL = 120_000;
+    const CREDIT_RETRY = 20_000;
+    const CREDIT_TIMEOUT = 25_000;
+    /** Pack-side units (same table the free-model page uses) for the suffix only. */
+    const CHANNEL_CREDIT_UNITS = { cline: 'dollars', zcode: 'tokens', gemini: 'quota' };
+    const CHANNEL_CREDIT_IDS = [
+      'opencode', 'lobsterai', 'qoder', 'qodercn', 'trae',
+      'cline', 'loomy', 'raccoon', 'zcode', 'minimax', 'gemini',
+    ];
+
+    function creditSourceOf(provider) {
+      if (provider === 'taobao') return 'tb';
+      if (provider === 'deepseek-official') return 'whale';
+      return CHANNEL_CREDIT_IDS.includes(provider) ? 'channel' : null;
+    }
+
+    /**
+     * Four digits and up read as `1.2k`. The badge shares a 176px column with the
+     * vendor name, and a raw token count there is noise, not information.
+     */
+    function abbreviateCredit(value) {
+      if (value === null || value === undefined || value === '') return null;
+      const number = Number(value);
+      if (!Number.isFinite(number)) return null;
+      const magnitude = Math.abs(number);
+      if (magnitude < 999.5) {
+        return String(magnitude >= 100 ? Math.round(number) : Math.round(number * 10) / 10);
+      }
+      const scale = magnitude >= 1e9 ? ['B', 1e9] : magnitude >= 1e6 ? ['M', 1e6] : ['k', 1e3];
+      let rounded = Math.round((number / scale[1]) * 10) / 10;
+      let suffix = scale[0];
+      // 999,996 must not read as "1000k": promote one unit instead.
+      if (Math.abs(rounded) >= 999.95 && suffix !== 'B') {
+        const up = suffix === 'k' ? ['M', 1e6] : ['B', 1e9];
+        rounded = Math.round((number / up[1]) * 10) / 10;
+        suffix = up[0];
+      }
+      return `${rounded}${suffix}`;
+    }
+
+    /** The exact value for the tooltip, so the badge never hides the truth. */
+    function creditExact(value) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return '';
+      if (Number.isInteger(number)) return number.toLocaleString('en-US');
+      const [whole, fraction] = Math.abs(number).toFixed(2).split('.');
+      const grouped = Number(whole).toLocaleString('en-US');
+      return `${number < 0 ? '-' : ''}${grouped}.${fraction}`;
+    }
+
+    const providerKey = value => typeof value === 'string'
+      ? value.trim().toLowerCase().replace(/^plugin:/, '').replace(/[\s_]+/g, '-')
+      : '';
+
+    /**
+     * Match route metadata, never model-family guesses. This covers Magpie's
+     * single route, per-owner connector routes, and direct providers which happen
+     * to be served by Magpie, without assigning Claude's quota to every Claude
+     * model on an unrelated route.
+     */
+    function magpieAccountsFor(group, quotas) {
+      const accounts = Array.isArray(quotas) ? quotas : [];
+      const hints = new Set();
+      const add = value => {
+        const key = providerKey(value);
+        if (key !== '') hints.add(key);
+      };
+      add(group.id);
+      add(group.name);
+      const named = /magpie\s*\(([^)]+)\)/i.exec(typeof group.name === 'string' ? group.name : '');
+      if (named !== null) add(named[1]);
+      const id = providerKey(group.id);
+      const routed = /(?:^|-)magpie(?:-connector)?-([a-z0-9.-]+)$/.exec(id);
+      if (routed !== null) add(routed[1]);
+      const magpieLike = id.includes('magpie') || named !== null;
+      for (const model of Array.isArray(group.models) ? group.models : []) {
+        const modelId = typeof model?.id === 'string' ? model.id : '';
+        const subscription = /^subscription:magpie\/([^/]+)\//i.exec(modelId);
+        if (subscription !== null) add(subscription[1]);
+        else if (magpieLike && modelId.includes('/')) add(modelId.split('/')[0]);
+      }
+      return accounts.filter(account => {
+        const provider = providerKey(account?.provider);
+        const name = providerKey(account?.name);
+        return (provider !== '' && hints.has(provider)) || (name !== '' && hints.has(name));
+      });
+    }
+
+    /** Parse Magpie's own balance spelling without discarding its currency/unit. */
+    function parseMagpieBalance(value) {
+      if (typeof value !== 'string' || value.trim() === '') return null;
+      const raw = value.trim();
+      const match = /^\s*([¥$€£])?\s*(-?\d+(?:\.\d+)?)(?:\s*(%|[a-zA-Z]+|[^\d\s()]+))?/.exec(raw.replace(/,/g, ''));
+      if (match === null) return null;
+      const amount = Number(match[2]);
+      if (!Number.isFinite(amount)) return null;
+      const symbols = { $: '$', '¥': '¥', '€': '€', '£': '£' };
+      const symbol = symbols[match[1]] ?? '';
+      const unit = match[3] ?? '';
+      return { amount, symbol, unit, key: `${symbol}:${providerKey(unit)}` };
+    }
+
+    function magpieWindowCredit(window) {
+      if (!window || typeof window !== 'object') return null;
+      if (typeof window.display === 'string' && /^https?:\/\//i.test(window.display.trim())) return null;
+      const limit = Number(window.limit);
+      const amount = Number(window.amount);
+      const used = Number(window.used);
+      const hasLimit = Number.isFinite(limit) && limit > 0;
+      const usedAmount = Number.isFinite(amount) ? amount : hasLimit && Number.isFinite(used) ? used * limit / 100 : null;
+      const unit = typeof window.unit === 'string' ? window.unit : '';
+      if (hasLimit && usedAmount !== null) {
+        const remaining = Math.max(0, limit - usedAmount);
+        const symbol = /^(?:usd|dollars?)$/i.test(unit) ? '$' : /^(?:cny|rmb|元)$/i.test(unit) ? '¥' : '';
+        return {
+          type: 'amount', amount: remaining, symbol, unit,
+          key: `${symbol}:${providerKey(unit)}`,
+          detail: `${window.name || 'quota'} ${symbol}${creditExact(remaining)}${unit ? ` ${unit}` : ''} / ${creditExact(limit)}${unit ? ` ${unit}` : ''}`,
+          usedRatio: Math.min(1, Math.max(0, usedAmount / limit)),
+          total: /total|overall|combined|credits?|points?|积分|合计|总额/i.test(String(window.name ?? '')),
+        };
+      }
+      const explicit = Number(window.remaining);
+      const remaining = Number.isFinite(explicit) ? explicit : Number.isFinite(used) ? 100 - used : null;
+      if (remaining === null) return null;
+      return {
+        type: 'percent', amount: Math.min(100, Math.max(0, remaining)),
+        detail: `${window.name || 'quota'} ${creditExact(remaining)}%`,
+        usedRatio: 1 - remaining / 100,
+        total: /total|overall|combined|credits?|points?|积分|合计|总额/i.test(String(window.name ?? '')),
+      };
+    }
+
+    function magpieAccountCredit(account) {
+      if (account?.error) return null;
+      const balance = parseMagpieBalance(account?.balance);
+      if (balance !== null) {
+        return { ...balance, type: 'amount', detail: `${account.name || account.provider || 'Magpie'} ${balance.symbol}${creditExact(balance.amount)}${balance.unit ? ` ${balance.unit}` : ''}` };
+      }
+      const windows = (Array.isArray(account?.windows) ? account.windows : [])
+        .map(magpieWindowCredit).filter(Boolean);
+      if (windows.length === 0) return null;
+      windows.sort((left, right) => Number(right.total) - Number(left.total) || right.usedRatio - left.usedRatio);
+      return windows[0];
+    }
+
+    /** Sum like units; average percentages; never add dollars to tokens. */
+    function combineMagpieCredits(items, label) {
+      if (items.length === 0) return null;
+      if (items.every(item => item.type === 'amount')) {
+        const keys = new Set(items.map(item => item.unitKey ?? item.key));
+        if (keys.size !== 1) return null;
+        const amount = items.reduce((sum, item) => sum + item.amount, 0);
+        const first = items[0];
+        return {
+          type: 'amount', amount, symbol: first.symbol, unit: first.unit, unitKey: first.unitKey ?? first.key,
+          badge: `${first.symbol}${abbreviateCredit(amount)}`,
+          detail: items.length === 1
+            ? items[0].detail
+            : `${label} ${first.symbol}${creditExact(amount)}${first.unit ? ` ${first.unit}` : ''} · ${items.map(item => item.detail).join(' · ')}`,
+        };
+      }
+      if (items.every(item => item.type === 'percent')) {
+        const percent = items.reduce((sum, item) => sum + item.amount, 0) / items.length;
+        return {
+          type: 'percent', amount: percent,
+          badge: `${abbreviateCredit(percent)}%`,
+          detail: items.map(item => item.detail).join(' · '),
+        };
+      }
+      return null;
+    }
+
+    function magpieCredit(group, quotas) {
+      const accounts = magpieAccountsFor(group, quotas);
+      const byProvider = new Map();
+      for (const account of accounts) {
+        const key = providerKey(account.provider || account.name);
+        if (!byProvider.has(key)) byProvider.set(key, []);
+        byProvider.get(key).push(account);
+      }
+      const summaries = [];
+      for (const [key, providerAccounts] of byProvider) {
+        const label = providerAccounts[0]?.name || providerAccounts[0]?.provider || key;
+        const items = providerAccounts.map(magpieAccountCredit).filter(Boolean);
+        const summary = combineMagpieCredits(items, label);
+        if (summary !== null) summaries.push({ ...summary, key, label });
+      }
+      if (summaries.length === 0) return null;
+      if (summaries.length === 1) return { ...summaries[0], source: 'magpie' };
+      // A single Magpie route can expose several upstream owners. Combine only
+      // like units; otherwise the tightest percentage is the honest summary.
+      if (summaries.every(item => item.type === 'amount')) {
+        const combined = combineMagpieCredits(summaries, 'Magpie');
+        return combined === null ? null : { ...combined, source: 'magpie' };
+      }
+      if (summaries.every(item => item.type === 'percent')) {
+        const worst = Math.min(...summaries.map(item => item.amount));
+        return {
+          type: 'percent', amount: worst,
+          badge: `${abbreviateCredit(worst)}%`,
+          detail: summaries.map(item => item.detail).join(' · '), source: 'magpie',
+        };
+      }
+      return null;
+    }
+
+    const credits = (function createCredits() {
+      let context = null;
+      let snapshot = { rows: {} };
+      const rows = {};
+      const pending = new Set();
+      const listeners = new Set();
+      let magpieCache = null;
+      let magpiePending = null;
+
+      const publish = () => {
+        snapshot = { rows: { ...rows } };
+        for (const listener of Array.from(listeners)) listener();
+      };
+
+      /**
+       * The pack's own browser half goes through the shell's connection service;
+       * this asks the same service first and only falls back to the plain
+       * `/api/channel-pack` envelope when the shell does not expose it.
+       */
+      const connectionTransport = () => {
+        if (context === null) return null;
+        let connection;
+        try {
+          connection = context.get?.('connection');
+        } catch {
+          connection = undefined;
+        }
+        if (connection === undefined || connection === null) {
+          try {
+            connection = context.connection;
+          } catch {
+            connection = undefined;
+          }
+        }
+        try {
+          const call = connection?.rpc?.call;
+          return typeof call === 'function' ? { connection, call } : null;
+        } catch {
+          return null;
+        }
+      };
+
+      const fetchJson = async (path, init) => {
+        const impl = typeof window.fetch === 'function' ? window.fetch.bind(window) : null;
+        if (impl === null) throw new Error('no-fetch');
+        const controller = typeof AbortController === 'function' ? new AbortController() : null;
+        const timer = controller !== null && typeof window.setTimeout === 'function'
+          ? window.setTimeout(() => controller.abort(), CREDIT_TIMEOUT)
+          : null;
+        try {
+          const options = { credentials: 'same-origin', ...init };
+          if (controller !== null) options.signal = controller.signal;
+          const response = await impl(path, options);
+          if (response.ok !== true) throw new Error(`http-${response.status}`);
+          return await response.json();
+        } finally {
+          if (timer !== null && typeof window.clearTimeout === 'function') window.clearTimeout(timer);
+        }
+      };
+
+      const channelPackHttp = async (method, payload) => {
+        const body = JSON.stringify({
+          type: 'client-request',
+          rpcId: `vqs-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+          method: 'channel-pack',
+          payload: { method, payload },
+        });
+        const reply = await fetchJson('/api/channel-pack', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body,
+        });
+        return reply !== null && typeof reply === 'object' && reply.result !== undefined ? reply.result : reply;
+      };
+
+      const channelBalances = async provider => {
+        const transport = connectionTransport();
+        if (transport !== null) {
+          try {
+            const result = await transport.call(
+              transport.connection.rpc, '/api', 'channel-pack',
+              { method: 'credits.balances', payload: { provider } },
+            );
+            if (result?.ok === true) return result.value;
+          } catch {
+            /* a shell can expose `connection` without admitting this channel */
+          }
+        }
+        const result = await channelPackHttp('credits.balances', { provider });
+        if (result?.ok === true) return result.value;
+        throw new Error(typeof result?.error?.message === 'string' ? result.error.message : 'channel-pack-unavailable');
+      };
+
+      const channelCredit = (provider, value) => {
+        const unit = CHANNEL_CREDIT_UNITS[provider] ?? 'left';
+        const accounts = Array.isArray(value?.accounts) ? value.accounts : [];
+        let total = null;
+        const lines = [];
+        for (const account of accounts) {
+          const raw = account?.balance?.total;
+          const number = Number(raw);
+          // `null` means the pack could not ask, which is not a zero balance.
+          if (raw === null || raw === undefined || raw === '' || !Number.isFinite(number)) continue;
+          total = (total === null ? 0 : total) + number;
+          const nickname = typeof account?.nickname === 'string' && account.nickname !== ''
+            ? `${account.nickname} `
+            : '';
+          const suffix = unit === 'dollars' ? ' USD' : unit === 'quota' ? '%' : unit === 'tokens' ? ' tokens' : '';
+          lines.push(`${nickname}${creditExact(number)}${suffix}`);
+        }
+        if (total === null) return null;
+        const abbreviated = abbreviateCredit(total);
+        return {
+          badge: unit === 'dollars' ? `$${abbreviated}` : unit === 'quota' ? `${abbreviated}%` : abbreviated,
+          detail: lines.join(' · '),
+          source: 'channel',
+        };
+      };
+
+      const MAGPIE_QUOTA_PATHS = [
+        // This bundle: standalone Magpie, including a user-configured port.
+        '/api/vendor-quick-switch/magpie-quotas',
+        // Optional embedded Magpie: its same-origin proxy owns the web cookie.
+        '/api/our-free-model/engine/ui/v1/magpie/quotas',
+        // Existing quota plugins are sources too, never prerequisites.
+        '/magpie/quotas',
+        '/api/magpie-quota/quotas',
+      ];
+
+      /** One shared read per menu cycle, no matter how many vendors use it. */
+      const readMagpieQuotas = () => {
+        const now = Date.now();
+        if (magpieCache !== null && now - magpieCache.at < (magpieCache.rows.length > 0 ? CREDIT_TTL : CREDIT_RETRY)) {
+          return Promise.resolve(magpieCache.rows);
+        }
+        if (magpiePending !== null) return magpiePending;
+        magpiePending = (async () => {
+          let empty = null;
+          for (const path of MAGPIE_QUOTA_PATHS) {
+            try {
+              const data = await fetchJson(path);
+              const rows = Array.isArray(data?.providers) ? data.providers : Array.isArray(data?.data) ? data.data : null;
+              if (rows === null || data?.ok === false) continue;
+              if (rows.length > 0) return rows;
+              empty = rows;
+            } catch {
+              // Not installed, offline, or an older Host half: try the next source.
+            }
+          }
+          return empty ?? [];
+        })().then(rows => {
+          magpieCache = { at: Date.now(), rows };
+          return rows;
+        }).finally(() => {
+          magpiePending = null;
+        });
+        return magpiePending;
+      };
+
+      const directCredit = async group => {
+        const provider = group.id;
+        const source = creditSourceOf(provider);
+        if (source === 'channel') return channelCredit(provider, await channelBalances(provider));
+        if (source === 'tb') {
+          const data = await fetchJson('/api/tb-panel/points');
+          if (data?.balance === null || data?.balance === undefined || data?.balance === '') return null;
+          const number = Number(data.balance);
+          if (!Number.isFinite(number)) return null;
+          return { badge: abbreviateCredit(number), detail: creditExact(number), source: 'tb' };
+        }
+        if (source === 'whale') {
+          const data = await fetchJson('/dsh-whale/balance.json');
+          if (data?.ok !== true) return null;
+          const number = Number(data.totalBalance);
+          if (!Number.isFinite(number)) return null;
+          const currency = typeof data.currency === 'string' ? data.currency.toUpperCase() : '';
+          const symbol = currency === 'USD' ? '$' : currency === 'CNY' ? '¥' : '';
+          return { badge: `${symbol}${abbreviateCredit(number)}`, detail: `${symbol}${creditExact(number)}`, source: 'whale' };
+        }
+        return null;
+      };
+
+      const resolveCredit = async group => {
+        // A native source is most specific. If it is absent or cannot answer,
+        // Magpie gets a chance to resolve the same real route instead.
+        if (creditSourceOf(group.id) !== null) {
+          try {
+            const direct = await directCredit(group);
+            if (direct !== null) return direct;
+          } catch {
+            // Optional plugin absent: this is exactly what the fallback is for.
+          }
+        }
+        return magpieCredit(group, await readMagpieQuotas());
+      };
+
+      const load = async group => {
+        const provider = group.id;
+        if (typeof provider !== 'string' || provider === '') return;
+        const known = rows[provider];
+        const ttl = known !== undefined && known.state === 'ok' ? CREDIT_TTL : CREDIT_RETRY;
+        if (known !== undefined && Date.now() - known.at < ttl) return;
+        if (pending.has(provider)) return;
+        pending.add(provider);
+        let entry;
+        try {
+          const credit = await resolveCredit(group);
+          entry = credit === null
+            ? { state: 'miss', badge: null, detail: null, source: creditSourceOf(provider) ?? 'magpie', at: Date.now() }
+            : { state: 'ok', badge: credit.badge, detail: credit.detail, source: credit.source, at: Date.now() };
+        } catch {
+          entry = { state: 'miss', badge: null, detail: null, source: creditSourceOf(provider) ?? 'magpie', at: Date.now() };
+        }
+        pending.delete(provider);
+        rows[provider] = entry;
+        publish();
+      };
+
+      return {
+        getSnapshot: () => snapshot,
+        subscribe(listener) {
+          listeners.add(listener);
+          return () => {
+            listeners.delete(listener);
+          };
+        },
+        bind(next) {
+          context = next;
+        },
+        /** Fire and forget: the menu must never wait on a network round trip. */
+        request(groups) {
+          if (!Array.isArray(groups)) return;
+          for (const value of groups) {
+            const group = typeof value === 'string' ? { id: value, name: value, models: [] } : value;
+            if (group !== null && typeof group === 'object') void load(group);
+          }
+        },
+        __setForTest(provider, entry) {
+          rows[provider] = entry;
+          publish();
+        },
+        __readForTest() {
+          return { ...rows };
+        },
+        __resetForTest() {
+          for (const key of Object.keys(rows)) delete rows[key];
+          magpieCache = null;
+          magpiePending = null;
+          publish();
+        },
+      };
+    })();
+
+    function useCredits() {
+      return React.useSyncExternalStore(credits.subscribe, credits.getSnapshot);
+    }
+
+    /** What one row shows, or null when its source had no answer at all. */
+    function creditView(entry, translate) {
+      if (entry === undefined || entry === null) return null;
+      if (entry.badge === null || entry.badge === undefined || entry.badge === '') return null;
+      const label = translate(`credits.${entry.source}`);
+      const title = typeof entry.detail === 'string' && entry.detail !== ''
+        ? translate('credits.title', { label, detail: entry.detail })
+        : label;
+      return { badge: entry.badge, title };
+    }
+
+    /** One vendor row's badge; renders nothing when the source could not answer. */
+    function CreditBadge({ snapshot, provider, t: translate }) {
+      const view = creditView(snapshot.rows[provider], translate);
+      if (view === null) return null;
+      return h('span', { className: 'vqs-credit', title: view.title }, view.badge);
+    }
 
     /* ------------------------------------------------------------------- data */
 
@@ -276,6 +779,40 @@ window.__ModuleLoader__.load({
       return current;
     }
 
+    /** Rendered with a real box: hidden or mid-transition nodes cannot be revealed. */
+    function isShown(node) {
+      if (node === null || node === undefined) return false;
+      if (typeof node.getBoundingClientRect !== 'function') return true;
+      const rect = node.getBoundingClientRect();
+      if (rect === null || rect === undefined) return false;
+      const top = typeof rect.top === 'number' ? rect.top : 0;
+      const height = typeof rect.height === 'number' ? rect.height : (typeof rect.bottom === 'number' ? rect.bottom - top : 0);
+      return height > 0;
+    }
+
+    /**
+     * The shipped model option row that owns this provider id.
+     *
+     * Only `menuitemradio` rows count. The root pane also paints the current
+     * model's provider id on its "model" cell, so accepting any marker made the
+     * currently selected vendor look already revealed — its row answered the
+     * click with a zero-distance success and never opened the model pane.
+     */
+    function modelRowFor(markers, providerId, shown = isShown) {
+      if (markers === null || markers === undefined) return null;
+      for (const marker of markers) {
+        if (marker === null || marker === undefined) continue;
+        if (typeof marker.getAttribute !== 'function') continue;
+        if (marker.getAttribute('data-provider-id') !== providerId) continue;
+        if (typeof marker.closest !== 'function') continue;
+        const row = marker.closest('button[role="menuitemradio"]');
+        if (row === null || row === undefined) continue;
+        if (typeof shown === 'function' && !shown(row)) continue;
+        return row;
+      }
+      return null;
+    }
+
     /**
      * Reveal a vendor through the stable provider id painted on every shipped
      * model label. Display text is only a compatibility fallback: localized,
@@ -283,19 +820,22 @@ window.__ModuleLoader__.load({
      * @returns true when a group was found and revealed.
      */
     function revealVendor(surface, group, names) {
-      const list = listOf(surface) ?? surface;
-      if (list === null || list === undefined) return false;
-      if (typeof list.querySelectorAll !== 'function') return false;
+      const scope = surface ?? null;
+      if (scope === null) return false;
+      if (typeof scope.querySelectorAll !== 'function') return false;
 
-      let target = null;
+      const row = modelRowFor(scope.querySelectorAll('[data-provider-id]'), group.id);
+      let list = listOf(scope) ?? scope;
       let firstRow = null;
-      for (const marker of list.querySelectorAll('[data-provider-id]')) {
-        if (marker.getAttribute('data-provider-id') !== group.id) continue;
-        firstRow = typeof marker.closest === 'function'
-          ? marker.closest('button[role="menuitemradio"]') ?? marker
-          : marker;
-        target = groupOf(firstRow, list);
-        break;
+      let target = null;
+      if (row !== null) {
+        const own = typeof row.closest === 'function' ? row.closest('[role="menu"]') : null;
+        // A model option always lives in the shipped list; a marker outside one
+        // is not a model row at all.
+        if (own === null || own === undefined) return false;
+        list = own;
+        firstRow = row;
+        target = groupOf(row, list);
       }
 
       // Older host builds may not expose provider ids; retain the text lookup.
@@ -307,7 +847,8 @@ window.__ModuleLoader__.load({
           if (node.children.length !== 0) continue;
           const text = (node.textContent ?? '').trim();
           if (text === '' || !wanted.has(text)) continue;
-          target = node;
+          if (!isShown(node)) continue;
+          target = groupOf(node, list);
           firstRow = node;
           break;
         }
@@ -347,6 +888,14 @@ window.__ModuleLoader__.load({
       const [activeId, setActiveId] = React.useState(null);
       const columnRef = React.useRef(null);
       const { state: catalog } = useDirectory(getModels, state.sessionId);
+      const creditRows = useCredits();
+
+      /* Ask each vendor's own source once per menu open; cached rows skip the
+       * round trip, so this is cheap even while the menu re-renders. */
+      React.useEffect(() => {
+        if (!state.open) return;
+        credits.request(catalog.groups);
+      }, [state.open, catalog.groups]);
 
       /**
        * The shipped menu is the host's: never touch its height, offset, or
@@ -510,6 +1059,7 @@ window.__ModuleLoader__.load({
                 onClick: () => jump(group),
               },
                 h('span', { className: 'vqs-name' }, name),
+                h(CreditBadge, { snapshot: creditRows, provider: group.id, t }),
                 h('span', { className: 'vqs-check' }, isCurrent ? h(Icon, { name: 'check' }) : null),
               );
             }),
@@ -532,11 +1082,18 @@ window.__ModuleLoader__.load({
       const armRef = React.useRef(null);
       const listRef = React.useRef(null);
       const { directory, state } = useDirectory(getModels, sessionId);
+      const creditRows = useCredits();
 
       const vendors = React.useMemo(() => orderVendors(state.groups), [state.groups]);
       const busy = state.pending !== null;
       const disabled = locked === true || busy;
       const currentVendor = vendorFor(vendors, state.current?.provider);
+
+      /* The seat only mounts while the shipped menu is open, which is exactly
+       * when the in-menu vendor rows need a number to show. */
+      React.useEffect(() => {
+        credits.request(state.groups);
+      }, [state.groups]);
 
       React.useEffect(() => {
         if (directory === null) return;
@@ -630,6 +1187,7 @@ window.__ModuleLoader__.load({
           ...extra,
         },
           h('span', { className: 'vqs-name' }, name),
+          h(CreditBadge, { snapshot: creditRows, provider: group.id, t }),
           h('span', { className: 'vqs-check' }, selected ? h(Icon, { name: 'check' }) : null),
         );
       };
@@ -769,6 +1327,7 @@ window.__ModuleLoader__.load({
         }, 'vendor-quick-switch: styles');
 
         const getModels = () => ctx.get('modelDirectories');
+        credits.bind(ctx);
 
         slots.inject('conversation.input.model.options', () => slots.register({
           name: 'conversation.input.model.options',
