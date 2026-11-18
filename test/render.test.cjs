@@ -27,11 +27,14 @@ function load() {
       removeEventListener() {},
       requestAnimationFrame: fn => { fn(); return 1; },
       cancelAnimationFrame() {},
-      setTimeout: fn => { fn(); return 1; },
+      setTimeout: () => 1,
       getComputedStyle: node => ({
         position: 'static',
         ...(node && node.__scrollY ? { overflowY: 'auto' } : {}),
       }),
+      KeyboardEvent: class KeyboardEvent {
+        constructor(type, props) { this.type = type; Object.assign(this, props); }
+      },
       localStorage: {
         getItem: key => (store.has(key) ? store.get(key) : null),
         setItem: (key, value) => store.set(key, value),
@@ -92,7 +95,8 @@ const directoryState = {
     { id: 'deepseek-official', name: 'DeepSeek', models: [{ id: 'ds1', name: 'DeepSeek Model' }] },
     { id: 'deepseek-official-vision', name: 'DeepSeek + 自动识图', models: [{ id: 'ds1', name: 'DeepSeek Model' }] },
     { id: 'tb', name: 'TB积分助手', models: [{ id: 'm1', name: 'Model One' }, { id: 'm2', name: 'Model Two' }] },
-    { id: 'codearts', name: 'CodeArts', models: [] },
+    { id: 'codearts', name: 'CodeArts', models: [{ id: 'ca1', name: 'CodeArts Model' }] },
+    { id: 'empty', name: 'Empty vendor', models: [] },
   ],
   failures: [],
   status: 'ready',
@@ -196,8 +200,9 @@ assert.equal(prevented, 1, 'mousedown refuses focus so the menu does not blur-cl
 /* ------------------------------------------------- vendor jump into the list */
 
 {
-  /* A heading inside a scrollable list: the jump must scroll that box so the
-   * vendor name lands at the top with its models underneath. */
+  /* Match the shipped DOM: MenuGroup > model row > label[data-provider-id].
+   * The heading deliberately has unrelated text: provider id, not a localized
+   * title, is what must locate the group. */
   const scroller = {
     __scrollY: true,
     scrollTop: 120,
@@ -206,19 +211,38 @@ assert.equal(prevented, 1, 'mousedown refuses focus so the menu does not blur-cl
     getBoundingClientRect: () => ({ top: 100, bottom: 400, left: 0, right: 200 }),
     parentElement: null,
   };
-  const heading = {
-    children: [],
-    textContent: 'CodeArts',
-    getBoundingClientRect: () => ({ top: 500, bottom: 520, left: 0, right: 200 }),
-    parentElement: scroller,
-    scrollIntoView: () => { throw new Error('the inner scroller should be used, not the page'); },
+  const makeGroup = (provider, top, rowTop = top + 30, stickyTop = top) => {
+    const heading = {
+      children: [],
+      textContent: '标题文字不参与定位',
+      getBoundingClientRect: () => ({ top: stickyTop, bottom: stickyTop + 24, left: 0, right: 200 }),
+      scrollIntoView: () => { throw new Error('the inner scroller should be used, not the page'); },
+    };
+    const group = {
+      firstElementChild: heading,
+      querySelectorAll: () => [],
+      getBoundingClientRect: () => ({ top, bottom: rowTop + 20, left: 0, right: 200 }),
+    };
+    const row = {
+      contains: () => false,
+      getBoundingClientRect: () => ({ top: rowTop, bottom: rowTop + 20, left: 0, right: 200 }),
+      parentElement: group,
+    };
+    const marker = {
+      getAttribute: name => (name === 'data-provider-id' ? provider : null),
+      closest: () => row,
+    };
+    group.parentElement = scroller;
+    scroller.querySelectorAll = selector => (selector === '[data-provider-id]' ? [marker] : []);
+    return { group, heading, row, marker };
   };
-  const list = { querySelectorAll: () => [heading], parentElement: null };
+
+  makeGroup('codearts', 500, 530);
   const withList = {
     isConnected: true,
     contains: () => true,
     getBoundingClientRect: () => ({ top: 300, bottom: 520, left: 400, right: 560 }),
-    querySelector: selector => (selector === '[role="menu"]' ? list : null),
+    querySelector: selector => (selector === '[role="menu"]' ? scroller : null),
   };
   panel.show('session-1', withList);
   harness.index = 0;
@@ -226,50 +250,37 @@ assert.equal(prevented, 1, 'mousedown refuses focus so the menu does not blur-cl
   const open = VendorIndex({ getModels: () => models, t: key => key });
   const codearts = collect(open, node => node.props['data-vendor-id'] === 'codearts')[0];
   codearts.props.onClick();
-  // Heading sat 400px below the box top → scrolled by exactly that much.
-  assert.equal(scroller.scrollTop, 120 + 400, 'the list scrolls only as far as needed');
+  // The clicked group sits 400px below the viewport top and moves there.
+  assert.equal(scroller.scrollTop, 120 + 400, 'the clicked vendor moves to the top of the list');
 
   // A vendor near the end stops at the maximum scroll instead of being forced up.
-  const tail = {
-    children: [],
-    textContent: 'TB积分助手',
-    getBoundingClientRect: () => ({ top: 2000, bottom: 2020, left: 0, right: 200 }),
-    parentElement: scroller,
-    scrollIntoView: () => { throw new Error('no page scroll'); },
-  };
+  makeGroup('tb', 2000, 2030);
   scroller.scrollTop = 100;
-  const tailList = { querySelectorAll: () => [tail], parentElement: null };
-  panel.show('session-1', {
-    isConnected: true,
-    contains: () => true,
-    getBoundingClientRect: () => ({ top: 300, bottom: 520, left: 400, right: 560 }),
-    querySelector: selector => (selector === '[role="menu"]' ? tailList : null),
-  });
+  panel.show('session-1', withList);
   harness.index = 0;
   harness.queue = [{ top: 300, bottom: 520, left: 400, right: 560 }, null];
   const tailIndex = VendorIndex({ getModels: () => models, t: key => key });
   collect(tailIndex, node => node.props['data-vendor-id'] === 'tb')[0].props.onClick();
   assert.equal(scroller.scrollTop, 900, 'clamped to the maximum scroll, allowed to sit mid-list');
 
-  // An already visible heading is not scrolled at all.
+  // A vendor already on screen still moves to the top: the click must visibly
+  // reposition the list, not just highlight the row in the side index.
+  makeGroup('codearts', 150, 180);
   scroller.scrollTop = 40;
-  const visible = {
-    children: [],
-    textContent: 'CodeArts',
-    getBoundingClientRect: () => ({ top: 150, bottom: 170, left: 0, right: 200 }),
-    parentElement: scroller,
-    scrollIntoView: () => { throw new Error('no page scroll'); },
-  };
-  panel.show('session-1', {
-    isConnected: true,
-    contains: () => true,
-    getBoundingClientRect: () => ({ top: 300, bottom: 520, left: 400, right: 560 }),
-    querySelector: selector => (selector === '[role="menu"]' ? { querySelectorAll: () => [visible], parentElement: null } : null),
-  });
+  panel.show('session-1', withList);
   harness.index = 0;
   harness.queue = [{ top: 300, bottom: 520, left: 400, right: 560 }, null];
   collect(VendorIndex({ getModels: () => models, t: key => key }), node => node.props['data-vendor-id'] === 'codearts')[0].props.onClick();
-  assert.equal(scroller.scrollTop, 40, 'a visible vendor does not move the list');
+  assert.equal(scroller.scrollTop, 40 + 50, 'a visible vendor aligns with the list top');
+
+  // A group whose start is above the viewport scrolls back up to its start.
+  makeGroup('codearts', -200, 130, 100);
+  scroller.scrollTop = 70;
+  panel.show('session-1', withList);
+  harness.index = 0;
+  harness.queue = [{ top: 300, bottom: 520, left: 400, right: 560 }, null];
+  collect(VendorIndex({ getModels: () => models, t: key => key }), node => node.props['data-vendor-id'] === 'codearts')[0].props.onClick();
+  assert.equal(scroller.scrollTop, 0, 'a group above the viewport is brought back to its start, clamped');
 }
 
 /* ------------------------------- root pane: open the list, then reveal the group */
@@ -290,6 +301,73 @@ assert.equal(prevented, 1, 'mousedown refuses focus so the menu does not blur-cl
   const first = collect(open, node => node.props['data-vendor-id'] === 'tb')[0];
   first.props.onClick();
   assert.deepEqual(clicks, ['model'], 'the shipped model pane is opened before revealing');
+}
+
+/* ----------------------- effort/search panes: return, drill, then reveal */
+
+for (const startPane of ['effort', 'search']) {
+  let pane = startPane;
+  let clicks = 0;
+  let escapes = 0;
+  const viewport = {
+    __scrollY: true,
+    scrollTop: 0,
+    scrollHeight: 1000,
+    clientHeight: 300,
+    parentElement: null,
+    getBoundingClientRect: () => ({ top: 100, bottom: 400, left: 0, right: 200 }),
+  };
+  const heading = {
+    children: [],
+    textContent: 'TB积分助手',
+    getBoundingClientRect: () => ({ top: 500, bottom: 524, left: 0, right: 200 }),
+  };
+  const group = {
+    firstElementChild: heading,
+    querySelectorAll: () => [heading],
+    parentElement: viewport,
+    getBoundingClientRect: () => ({ top: 500, bottom: 550, left: 0, right: 200 }),
+  };
+  const row = {
+    contains: () => false,
+    parentElement: group,
+    getBoundingClientRect: () => ({ top: 530, bottom: 550, left: 0, right: 200 }),
+  };
+  const marker = {
+    getAttribute: () => 'tb',
+    closest: () => row,
+  };
+  viewport.querySelectorAll = selector => (selector === '[data-provider-id]' ? [marker] : []);
+  const filtered = { querySelectorAll: () => [] };
+  const cell = { click: () => { clicks += 1; pane = 'model'; } };
+  const dynamicSurface = {
+    isConnected: true,
+    contains: () => true,
+    getBoundingClientRect: () => ({ top: 300, bottom: 520, left: 400, right: 560 }),
+    querySelectorAll: () => [],
+    querySelector: selector => {
+      if (selector === 'button[role="menuitem"]') return pane === 'root' ? cell : null;
+      if (selector === '[role="menu"]') {
+        if (pane === 'model') return viewport;
+        if (pane === 'search') return filtered;
+      }
+      return null;
+    },
+    dispatchEvent: event => {
+      assert.equal(event.key, 'Escape');
+      escapes += 1;
+      pane = 'root';
+    },
+  };
+  panel.show('session-1', dynamicSurface);
+  harness.index = 0;
+  harness.queue = [{ top: 300, bottom: 520, left: 400, right: 560 }, null];
+  const dynamicIndex = VendorIndex({ getModels: () => models, t: key => key });
+  collect(dynamicIndex, node => node.props['data-vendor-id'] === 'tb')[0].props.onClick();
+  assert.equal(escapes, 1, `${startPane}: Escape returns to the root pane`);
+  assert.equal(clicks, 1, `${startPane}: the shipped Model cell is opened once`);
+  assert.equal(pane, 'model', `${startPane}: target model pane is visible`);
+  assert.equal(viewport.scrollTop, 400, `${startPane}: target group is revealed at the top after drilling`);
 }
 
 // Narrow viewport: the column flips to the left of the menu instead of overflowing.

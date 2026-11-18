@@ -69,11 +69,12 @@ function load(withStyles = true) {
   assert.equal(settings.getSnapshot(), 'panel');
 
   const groups = [
-    { id: 'tb', name: 'TB积分助手', models: [] },
+    { id: 'tb', name: 'TB积分助手', models: [{ id: 'm1', name: 'Model One' }] },
     { id: 'deepseek-official-vision', name: 'DeepSeek + 自动识图', models: [] },
-    { id: 'deepseek-official', name: 'DeepSeek', models: [] },
+    { id: 'deepseek-official', name: 'DeepSeek', models: [{ id: 'ds1', name: 'DeepSeek Model' }] },
     { id: 'codearts-vision', name: 'CodeArts + Auto Vision', models: [] },
-    { id: 'codearts', name: 'CodeArts', models: [] },
+    { id: 'codearts', name: 'CodeArts', models: [{ id: 'ca1', name: 'CodeArts Model' }] },
+    { id: 'empty', name: 'Empty vendor', models: [] },
   ];
   assert.equal(isVisionTwin(groups[1]), true);
   assert.equal(isVisionTwin(groups[3]), true);

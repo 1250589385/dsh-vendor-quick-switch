@@ -10,7 +10,7 @@ The shipped model menu groups models by provider, so switching vendors on a long
 
 - open the model menu → the index appears next to it, attached to the menu's own rectangle;
 - scroll the vendor list with the wheel;
-- click a vendor → the shipped model list jumps to that vendor's group;
+- click a vendor → the shipped model list brings that vendor's heading to the top by stable provider id, with its models underneath; a trailing vendor stops at the list's maximum scroll;
 - drill into the model pane → the index stays, and leaves when the menu closes;
 - pick a model → switching goes through the same directory and write path as the shipped selector, so the two never disagree.
 
@@ -74,7 +74,7 @@ MIT.
 
 - 打开模型菜单 → 索引贴着菜单出现；
 - 鼠标滚轮滚厂商；
-- 点厂商 → 原模型列表直接跳到该厂商分组；
+- 点厂商 → 按稳定的厂商 ID 定位，把该厂商标题带到列表顶部，模型紧跟在下；末尾厂商最多滚到列表末端；
 - 进到模型列表后索引不消失，菜单关闭时它一起收起；
 - 选模型走与原选择器同一条目录和写入路径，两边永远同步。
 

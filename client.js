@@ -159,7 +159,10 @@ window.__ModuleLoader__.load({
     function orderVendors(groups) {
       const rank = id => (id === 'deepseek-account' ? 0 : id === 'deepseek-official' ? 1 : 2);
       return groups
-        .filter(group => !isVisionTwin(group))
+        // The shipped list hides empty groups, so offering one here would make
+        // its row a guaranteed dead jump. Empty failed groups stay in the host's
+        // own warning strip instead.
+        .filter(group => !isVisionTwin(group) && (group.models?.length ?? 0) > 0)
         .sort((left, right) => rank(left.id) - rank(right.id));
     }
 
@@ -263,46 +266,68 @@ window.__ModuleLoader__.load({
       return null;
     }
 
+    /** The direct child of the model viewport that owns this row. */
+    function groupOf(row, list) {
+      let current = row;
+      while (current.parentElement !== null && current.parentElement !== undefined
+        && current.parentElement !== list) {
+        current = current.parentElement;
+      }
+      return current;
+    }
+
     /**
-     * Bring one vendor's group heading to the top of the shipped list, so the
-     * vendor name and the models under it are both on screen.
-     * @param names - every display name the vendor may appear under.
-     * @returns true when a heading was found and scrolled to.
+     * Reveal a vendor through the stable provider id painted on every shipped
+     * model label. Display text is only a compatibility fallback: localized,
+     * renamed, or visually hidden group headings must never disable jumping.
+     * @returns true when a group was found and revealed.
      */
-    function revealVendor(surface, names) {
+    function revealVendor(surface, group, names) {
       const list = listOf(surface) ?? surface;
       if (list === null || list === undefined) return false;
       if (typeof list.querySelectorAll !== 'function') return false;
-      const wanted = new Set((Array.isArray(names) ? names : [names])
-        .filter(name => typeof name === 'string' && name !== '')
-        .map(name => name.trim()));
-      if (wanted.size === 0) return false;
 
-      let heading = null;
-      for (const node of list.querySelectorAll('div,span,button,li,header')) {
-        if (node.children.length !== 0) continue;
-        const text = (node.textContent ?? '').trim();
-        if (text === '') continue;
-        if (!wanted.has(text)) continue;
-        heading = node;
+      let target = null;
+      let firstRow = null;
+      for (const marker of list.querySelectorAll('[data-provider-id]')) {
+        if (marker.getAttribute('data-provider-id') !== group.id) continue;
+        firstRow = typeof marker.closest === 'function'
+          ? marker.closest('button[role="menuitemradio"]') ?? marker
+          : marker;
+        target = groupOf(firstRow, list);
         break;
       }
-      if (heading === null) return false;
 
-      /* Scroll only as far as needed to bring the heading into the box. A vendor
-       * near the end of the list stops at the maximum scroll instead of being
-       * forced to the top, which is what a short tail can actually reach. */
-      const scroller = scrollerOf(heading);
-      const box = heading.getBoundingClientRect();
+      // Older host builds may not expose provider ids; retain the text lookup.
+      if (target === null) {
+        const wanted = new Set((Array.isArray(names) ? names : [names])
+          .filter(name => typeof name === 'string' && name !== '')
+          .map(name => name.trim()));
+        for (const node of list.querySelectorAll('div,span,button,li,header')) {
+          if (node.children.length !== 0) continue;
+          const text = (node.textContent ?? '').trim();
+          if (text === '' || !wanted.has(text)) continue;
+          target = node;
+          firstRow = node;
+          break;
+        }
+      }
+      if (target === null || firstRow === null) return false;
+
+      /* Put the clicked vendor at the top of the shipped list so it and the
+       * models under it read as a group. Clamping at maxScroll is what keeps a
+       * trailing vendor from being forced further than the list can go. */
+      const scroller = scrollerOf(firstRow);
+      const box = target.getBoundingClientRect();
       if (scroller !== null && scroller !== undefined) {
         const frame = scroller.getBoundingClientRect();
-        if (box.top >= frame.top && box.bottom <= frame.bottom) return true;
         const maxScroll = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
         const delta = box.top - frame.top;
+        if (delta === 0) return true;
         scroller.scrollTop = Math.min(maxScroll, Math.max(0, scroller.scrollTop + delta));
         return true;
       }
-      heading.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      target.scrollIntoView({ block: 'start', inline: 'nearest' });
       return true;
     }
 
@@ -417,16 +442,35 @@ window.__ModuleLoader__.load({
         /* The host localizes the account group, so try every name it can wear. */
         const names = [group.name, 'DeepSeek 账号', 'DeepSeek Account', t('vendor.account')]
           .filter(name => typeof name === 'string' && name !== '');
-        if (revealVendor(surface, names)) return;
+        if (revealVendor(surface, group, names)) return;
 
-        // Still on the shipped root pane: open its model list, then reveal.
+        /* Root pane has a Model cell. Effort and filtered model panes do not:
+         * the host's own Escape handler returns those to root first, clearing
+         * the query on the subsequent drill instead of leaving the click dead. */
+        let drilled = false;
         const cell = surface?.querySelector('button[role="menuitem"]');
-        if (cell === null || cell === undefined) return;
-        cell.click();
+        if (cell !== null && cell !== undefined) {
+          drilled = true;
+          cell.click();
+        } else if (surface !== null && surface !== undefined
+          && typeof surface.dispatchEvent === 'function'
+          && typeof window.KeyboardEvent === 'function') {
+          surface.dispatchEvent(new window.KeyboardEvent('keydown', {
+            key: 'Escape', bubbles: true, cancelable: true,
+          }));
+        } else if (surface === null || surface === undefined) {
+          return;
+        }
 
         let tries = 0;
         const tick = () => {
-          if (revealVendor(surface, names)) return;
+          if (revealVendor(surface, group, names)) return;
+          // Escape returned Effort/search to root: open Model on this pass.
+          const rootCell = drilled ? null : surface?.querySelector('button[role="menuitem"]');
+          if (rootCell !== null && rootCell !== undefined) {
+            drilled = true;
+            rootCell.click();
+          }
           tries += 1;
           if (tries >= 20) return;
           window.requestAnimationFrame(tick);
@@ -434,7 +478,7 @@ window.__ModuleLoader__.load({
         window.requestAnimationFrame(tick);
         // The model pane can mount after an animation frame; one late pass
         // covers a list that was still empty on the first frames.
-        window.setTimeout(() => { revealVendor(surface, names); }, 120);
+        window.setTimeout(() => { revealVendor(surface, group, names); }, 120);
       };
 
       return h('div', {
